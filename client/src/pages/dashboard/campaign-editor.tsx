@@ -237,8 +237,8 @@ export default function CampaignEditorPage({ campaignId }: CampaignEditorProps) 
 
             <div className="lg:col-span-2">
               <Card className="h-full">
-                <CardHeader className="pb-2">
-                  <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <Tabs value={activeTab} onValueChange={setActiveTab}>
+                  <CardHeader className="pb-2">
                     <TabsList>
                       <TabsTrigger value="edit" className="gap-2" data-testid="tab-edit">
                         <Code className="w-4 h-4" />
@@ -249,40 +249,40 @@ export default function CampaignEditorPage({ campaignId }: CampaignEditorProps) 
                         Preview
                       </TabsTrigger>
                     </TabsList>
-                  </Tabs>
-                </CardHeader>
-                <CardContent>
-                  <TabsContent value="edit" className="mt-0">
-                    <FormField
-                      control={form.control}
-                      name="htmlContent"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormControl>
-                            <Textarea
-                              className="min-h-[500px] font-mono text-sm resize-none"
-                              placeholder="Enter your email HTML content..."
-                              data-testid="textarea-content"
-                              {...field}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  </TabsContent>
-                  <TabsContent value="preview" className="mt-0">
-                    <div className="border rounded-lg overflow-hidden bg-white">
-                      <div className="p-4 bg-muted/50 border-b">
-                        <div className="text-sm text-muted-foreground">Subject: {form.watch("subject") || "No subject"}</div>
-                      </div>
-                      <div 
-                        className="p-6 min-h-[450px]"
-                        dangerouslySetInnerHTML={{ __html: htmlContent || "<p>No content yet</p>" }}
+                  </CardHeader>
+                  <CardContent>
+                    <TabsContent value="edit" className="mt-0">
+                      <FormField
+                        control={form.control}
+                        name="htmlContent"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormControl>
+                              <Textarea
+                                className="min-h-[500px] font-mono text-sm resize-none"
+                                placeholder="Enter your email HTML content..."
+                                data-testid="textarea-content"
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
                       />
-                    </div>
-                  </TabsContent>
-                </CardContent>
+                    </TabsContent>
+                    <TabsContent value="preview" className="mt-0">
+                      <div className="border rounded-lg overflow-hidden bg-white">
+                        <div className="p-4 bg-muted/50 border-b">
+                          <div className="text-sm text-muted-foreground">Subject: {form.watch("subject") || "No subject"}</div>
+                        </div>
+                        <div 
+                          className="p-6 min-h-[450px]"
+                          dangerouslySetInnerHTML={{ __html: htmlContent || "<p>No content yet</p>" }}
+                        />
+                      </div>
+                    </TabsContent>
+                  </CardContent>
+                </Tabs>
               </Card>
             </div>
           </div>
