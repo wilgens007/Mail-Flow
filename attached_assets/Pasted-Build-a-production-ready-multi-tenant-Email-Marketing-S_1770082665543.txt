@@ -1,0 +1,118 @@
+Build a production-ready multi-tenant Email Marketing SaaS (Mailchimp-like) with:
+- Users sign up/login
+- Upload/manage contacts
+- Create and send email campaigns through Amazon SES
+- Stripe monthly subscriptions with plan limits
+- Admin safety controls (bounce/complaint suppression, rate limits)
+- MVP uses our platform domain as sender; clients can set Reply-To
+- Phase 2 supports “Domain Connect” (clients verify their domain via DKIM/SPF)
+
+TECH STACK (Replit-friendly):
+- Frontend: React + Vite + Tailwind
+- Backend: Node.js + Express
+- Database: PostgreSQL using Prisma ORM
+- Auth: Email/password with JWT sessions + refresh tokens
+- Email: AWS SES v2 (AWS SDK v3)
+- Payments: Stripe subscriptions + webhooks
+- File upload: CSV upload for contacts (server parses CSV)
+- Hosting: single monorepo with /server and /client, both run locally; in production serve client from server
+
+APP NAME:
+- “YourBrand Email” (placeholder, easy to rename)
+
+CORE PAGES:
+1) Marketing site: Home, Pricing, Login, Signup
+2) App dashboard:
+   - Contacts (upload CSV, tag, segment, unsubscribe status)
+   - Campaigns (create, edit, send, schedule, view results)
+   - Billing (current plan, invoices, upgrade/downgrade, cancel)
+   - Settings (From Name, Reply-To, company info)
+3) Admin dashboard:
+   - View tenants/users
+   - Force disable tenant for abuse
+   - View system sending stats, bounce/complaint rates
+
+DATABASE MODELS (Prisma):
+- User: id, email, passwordHash, tenantId, role(admin/user)
+- Tenant: id, name, createdAt, sendingFromName, replyToEmail, status(active/disabled)
+- Contact: id, tenantId, email, firstName, lastName, tags(string[]), unsubscribed(bool), createdAt
+- Campaign: id, tenantId, name, subject, htmlContent, status(draft/scheduled/sent), scheduledAt
+- CampaignSend: id, campaignId, contactId, status(queued/sent/delivered/bounced/complained/unsubscribed), messageId, sentAt
+- EventLog: id, tenantId, type, payloadJson, createdAt
+- Subscription: id, tenantId, stripeCustomerId, stripeSubscriptionId, plan, status
+- Suppression: id, tenantId, email, reason(bounce/complaint/unsub), createdAt
+
+EMAIL SENDING (MVP MODEL A):
+- Verified SES identity: platform domain only (e.g., noreply@yourbrand.com)
+- For each campaign send:
+  - FROM: "Tenant From Name" <noreply@yourbrand.com>
+  - REPLY-TO: tenant.replyToEmail
+  - Add List-Unsubscribe header + unsubscribe link in footer
+  - Enforce plan limits and rate limits
+
+PLAN LIMITS (example):
+- Starter: 1,000 emails/month
+- Pro: 10,000 emails/month
+- Agency: 50,000 emails/month
+Implement usage counters per tenant per billing cycle.
+
+AWS SES INTEGRATION:
+- Use AWS SDK v3 and SESv2 client
+- Read AWS credentials and region from environment variables:
+  AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+- Provide a /server/scripts/sesVerifyCheck.js for verifying platform domain status (optional)
+- Implement /api/send/campaign/:id endpoint that queues sends and processes in batches
+- Add basic job queue using DB polling (no external queue required for MVP):
+  - CampaignSend rows created with status=queued
+  - Worker runs every 5 seconds to send up to N queued emails per tenant
+  - Respect global send rate and per-tenant rate
+
+BOUNCE/COMPLAINT HANDLING:
+- Create endpoint /api/ses/webhook to receive SES events (via SNS HTTP subscription)
+- Validate SNS signature OR provide a setting to disable validation for local dev
+- When bounce/complaint arrives:
+  - Add email to Suppression table
+  - Mark Contact.unsubscribed=true for that tenant
+  - Update CampaignSend status
+- Prevent future sends to suppressed addresses
+
+STRIPE:
+- Stripe Checkout for subscriptions
+- Webhook endpoint /api/stripe/webhook
+- On subscription active: enable tenant
+- On payment failure/canceled: set tenant disabled after grace period
+- Store subscription details in DB
+
+SECURITY & COMPLIANCE:
+- Password hashing (bcrypt)
+- Input validation with zod
+- CSRF protection for session endpoints (or JWT best practices)
+- Proper CORS
+- Audit logs in EventLog
+- Unsubscribe endpoint: /unsubscribe?tenant=...&email=... tokenized
+- Always include physical address placeholder in footer (tenant settings)
+
+LOCAL DEV SETUP:
+- Provide .env.example for server and client
+- Provide Prisma migration + seed script
+- Provide README with:
+  - How to run Postgres (Replit built-in or docker optional)
+  - How to set AWS SES + verified sender
+  - How to set Stripe keys + webhook testing
+  - How to test sending in SES sandbox
+  - How to request production access
+
+UI REQUIREMENTS:
+- Clean modern dashboard UI
+- Tables for contacts and campaigns
+- Contact upload wizard (CSV mapping)
+- Rich text editor for campaign html (basic)
+- Toast notifications
+- Loading states and error handling
+
+DELIVERABLES:
+- Working code in /server and /client
+- Prisma schema + migrations
+- Seed data
+- A minimal but functional MVP end-to-end:
+  signup -> upload contacts -> create campaign -> send -> show send results -> billing
