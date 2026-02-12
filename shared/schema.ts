@@ -56,6 +56,8 @@ export const campaigns = pgTable("campaigns", {
   name: text("name").notNull(),
   subject: text("subject").default(""),
   htmlContent: text("html_content").default(""),
+  contentJson: jsonb("content_json"),
+  editorMode: text("editor_mode").default("html"),
   status: campaignStatusEnum("status").default("draft").notNull(),
   scheduledAt: timestamp("scheduled_at"),
   sentAt: timestamp("sent_at"),

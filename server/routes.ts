@@ -11,6 +11,7 @@ import {
 } from "./auth";
 import { loginSchema, signupSchema, PLAN_LIMITS } from "@shared/schema";
 import { z } from "zod";
+import { generateHtmlFromJson, type SimpleEmailContent } from "./email-template";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -323,12 +324,14 @@ export async function registerRoutes(
 
   app.post("/api/campaigns", authMiddleware, tenantMiddleware, async (req: AuthRequest, res) => {
     try {
-      const { name, subject, htmlContent, status, scheduledAt } = req.body;
+      const { name, subject, htmlContent, contentJson, editorMode, status, scheduledAt } = req.body;
       const campaign = await storage.createCampaign({
         tenantId: req.tenantId!,
         name,
         subject: subject || "",
         htmlContent: htmlContent || "",
+        contentJson: contentJson || null,
+        editorMode: editorMode || "html",
         status: status || "draft",
         scheduledAt: scheduledAt ? new Date(scheduledAt) : null,
       });
@@ -346,11 +349,13 @@ export async function registerRoutes(
         return res.status(404).json({ message: "Campaign not found" });
       }
 
-      const { name, subject, htmlContent, status, scheduledAt } = req.body;
+      const { name, subject, htmlContent, contentJson, editorMode, status, scheduledAt } = req.body;
       const updated = await storage.updateCampaign(req.params.id, {
         name: name ?? campaign.name,
         subject: subject ?? campaign.subject,
         htmlContent: htmlContent ?? campaign.htmlContent,
+        contentJson: contentJson !== undefined ? contentJson : campaign.contentJson,
+        editorMode: editorMode ?? campaign.editorMode,
         status: status ?? campaign.status,
         scheduledAt: scheduledAt ? new Date(scheduledAt) : campaign.scheduledAt,
       });
@@ -389,6 +394,8 @@ export async function registerRoutes(
         name: `${campaign.name} (Copy)`,
         subject: campaign.subject || "",
         htmlContent: campaign.htmlContent || "",
+        contentJson: campaign.contentJson || null,
+        editorMode: campaign.editorMode || "html",
         status: "draft",
         scheduledAt: null,
       });
@@ -409,6 +416,15 @@ export async function registerRoutes(
 
       if (campaign.status !== "draft") {
         return res.status(400).json({ message: "Campaign has already been sent" });
+      }
+
+      if ((campaign as any).editorMode === "simple" && (campaign as any).contentJson) {
+        const tenant = await storage.getTenant(req.tenantId!);
+        const generatedHtml = generateHtmlFromJson(
+          (campaign as any).contentJson as SimpleEmailContent,
+          { companyAddress: tenant?.companyAddress || "", tenantId: req.tenantId! }
+        );
+        await storage.updateCampaign(campaign.id, { htmlContent: generatedHtml });
       }
 
       const { sendToAll, tags } = req.body;
