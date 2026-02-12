@@ -26,6 +26,7 @@ import {
   Building2,
   Mail,
   Loader2,
+  KeyRound,
 } from "lucide-react";
 import type { Tenant } from "@shared/schema";
 
@@ -37,12 +38,23 @@ const profileSchema = z.object({
 const tenantSchema = z.object({
   name: z.string().min(1, "Company name is required"),
   sendingFromName: z.string().optional(),
+  defaultFromEmail: z.string().email("Invalid email").or(z.string().length(0)).optional(),
   replyToEmail: z.string().email("Invalid email").or(z.string().length(0)).optional(),
   companyAddress: z.string().optional(),
 });
 
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required"),
+  newPassword: z.string().min(6, "Password must be at least 6 characters"),
+  confirmPassword: z.string().min(6, "Password must be at least 6 characters"),
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: "Passwords don't match",
+  path: ["confirmPassword"],
+});
+
 type ProfileForm = z.infer<typeof profileSchema>;
 type TenantForm = z.infer<typeof tenantSchema>;
+type ChangePasswordForm = z.infer<typeof changePasswordSchema>;
 
 export default function SettingsPage() {
   const { user, refreshUser } = useAuth();
@@ -61,8 +73,18 @@ export default function SettingsPage() {
     defaultValues: {
       name: user?.tenant?.name || "",
       sendingFromName: user?.tenant?.sendingFromName || "",
+      defaultFromEmail: (user?.tenant as any)?.defaultFromEmail || "",
       replyToEmail: user?.tenant?.replyToEmail || "",
       companyAddress: user?.tenant?.companyAddress || "",
+    },
+  });
+
+  const passwordForm = useForm<ChangePasswordForm>({
+    resolver: zodResolver(changePasswordSchema),
+    defaultValues: {
+      currentPassword: "",
+      newPassword: "",
+      confirmPassword: "",
     },
   });
 
@@ -75,6 +97,7 @@ export default function SettingsPage() {
       tenantForm.reset({
         name: user.tenant?.name || "",
         sendingFromName: user.tenant?.sendingFromName || "",
+        defaultFromEmail: (user.tenant as any)?.defaultFromEmail || "",
         replyToEmail: user.tenant?.replyToEmail || "",
         companyAddress: user.tenant?.companyAddress || "",
       });
@@ -127,6 +150,35 @@ export default function SettingsPage() {
     onError: (error) => {
       toast({
         title: "Failed to update settings",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const changePasswordMutation = useMutation({
+    mutationFn: async (data: ChangePasswordForm) => {
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentPassword: data.currentPassword,
+          newPassword: data.newPassword,
+        }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.message || "Failed to change password");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      passwordForm.reset();
+      toast({ title: "Password changed successfully" });
+    },
+    onError: (error) => {
+      toast({
+        title: "Failed to change password",
         description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       });
@@ -269,6 +321,23 @@ export default function SettingsPage() {
 
               <FormField
                 control={tenantForm.control}
+                name="defaultFromEmail"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>From Email</FormLabel>
+                    <FormControl>
+                      <Input type="email" placeholder="campaigns@yourcompany.com" data-testid="input-from-email" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      The email address your campaigns will be sent from (must be verified in SES)
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={tenantForm.control}
                 name="replyToEmail"
                 render={({ field }) => (
                   <FormItem>
@@ -316,6 +385,80 @@ export default function SettingsPage() {
                   <Save className="w-4 h-4 mr-2" />
                 )}
                 Save Settings
+              </Button>
+            </form>
+          </Form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-chart-4/10">
+              <KeyRound className="w-5 h-5 text-chart-4" />
+            </div>
+            <div>
+              <CardTitle>Change Password</CardTitle>
+              <CardDescription>Update your account password</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <Form {...passwordForm}>
+            <form onSubmit={passwordForm.handleSubmit(data => changePasswordMutation.mutate(data))} className="space-y-4">
+              <FormField
+                control={passwordForm.control}
+                name="currentPassword"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Current Password</FormLabel>
+                    <FormControl>
+                      <Input type="password" placeholder="Enter current password" data-testid="input-current-password" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={passwordForm.control}
+                name="newPassword"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>New Password</FormLabel>
+                    <FormControl>
+                      <Input type="password" placeholder="Enter new password" data-testid="input-new-password" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={passwordForm.control}
+                name="confirmPassword"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Confirm New Password</FormLabel>
+                    <FormControl>
+                      <Input type="password" placeholder="Confirm new password" data-testid="input-confirm-password" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <Button
+                type="submit"
+                disabled={changePasswordMutation.isPending}
+                data-testid="button-change-password"
+              >
+                {changePasswordMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <KeyRound className="w-4 h-4 mr-2" />
+                )}
+                Change Password
               </Button>
             </form>
           </Form>

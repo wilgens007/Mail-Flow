@@ -130,6 +130,14 @@ export default function LoginPage() {
                   )}
                 />
 
+                <div className="flex justify-end">
+                  <Link href="/forgot-password">
+                    <Button variant="ghost" className="p-0 h-auto text-sm text-muted-foreground underline-offset-4 hover:underline" data-testid="link-forgot-password">
+                      Forgot password?
+                    </Button>
+                  </Link>
+                </div>
+
                 <Button 
                   type="submit" 
                   className="w-full" 
@@ -151,7 +159,7 @@ export default function LoginPage() {
             <div className="mt-6 text-center text-sm">
               <span className="text-muted-foreground">Don't have an account? </span>
               <Link href="/signup">
-                <Button variant="link" className="p-0 h-auto" data-testid="link-signup">
+                <Button variant="ghost" className="p-0 h-auto text-primary underline-offset-4 hover:underline" data-testid="link-signup">
                   Sign up
                 </Button>
               </Link>

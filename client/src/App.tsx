@@ -21,6 +21,8 @@ import SettingsPage from "@/pages/dashboard/settings";
 import AnalyticsPage from "@/pages/dashboard/analytics";
 import AdminTenantsPage from "@/pages/admin/tenants";
 import AdminSystemPage from "@/pages/admin/system";
+import ForgotPasswordPage from "@/pages/forgot-password";
+import ResetPasswordPage from "@/pages/reset-password";
 import NotFound from "@/pages/not-found";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -98,6 +100,16 @@ function Router() {
         <PublicRoute>
           <SignupPage />
         </PublicRoute>
+      </Route>
+
+      <Route path="/forgot-password">
+        <PublicRoute>
+          <ForgotPasswordPage />
+        </PublicRoute>
+      </Route>
+
+      <Route path="/reset-password">
+        <ResetPasswordPage />
       </Route>
 
       <Route path="/dashboard">
