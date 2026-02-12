@@ -1,6 +1,8 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import express from "express";
+import Stripe from "stripe";
+import crypto from "crypto";
 import multer from "multer";
 import Papa from "papaparse";
 import { storage } from "./storage";
@@ -9,16 +11,136 @@ import {
   authMiddleware, adminMiddleware, tenantMiddleware,
   type AuthRequest 
 } from "./auth";
-import { loginSchema, signupSchema, PLAN_LIMITS } from "@shared/schema";
-import { z } from "zod";
+import { loginSchema, signupSchema, PLAN_LIMITS, assertCanSend, type PlanKey } from "@shared/schema";
+import { sendPasswordResetEmail, getSESFromEmail, isSESConfigured } from "./ses-service";
+import { verifyUnsubscribeToken, buildUnsubscribeUrl } from "./unsubscribe";
+import { checkAndResetMonthlyUsage, getTenantPlan } from "./plan-limits";
 import { generateHtmlFromJson, type SimpleEmailContent } from "./email-template";
+import { z } from "zod";
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+function getStripe(): Stripe | null {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  return new Stripe(key);
+}
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+
+  // Stripe webhook - uses raw body for signature verification
+  app.post("/api/stripe/webhook", async (req, res) => {
+    const stripe = getStripe();
+    if (!stripe) {
+      return res.status(400).json({ message: "Stripe not configured" });
+    }
+    
+    const sig = req.headers["stripe-signature"] as string;
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    
+    if (!sig || !webhookSecret) {
+      return res.status(400).json({ message: "Missing signature or webhook secret" });
+    }
+    
+    let event: Stripe.Event;
+    try {
+      event = stripe.webhooks.constructEvent(req.rawBody as Buffer, sig, webhookSecret);
+    } catch (err: any) {
+      console.error("Webhook signature verification failed:", err.message);
+      return res.status(400).json({ message: "Webhook signature verification failed" });
+    }
+    
+    try {
+      switch (event.type) {
+        case "checkout.session.completed": {
+          const session = event.data.object as Stripe.Checkout.Session;
+          const tenantId = session.metadata?.tenantId;
+          const plan = session.metadata?.plan as PlanKey;
+          if (tenantId && plan) {
+            const subscription = await storage.getSubscription(tenantId);
+            if (subscription) {
+              await storage.updateSubscription(subscription.id, {
+                stripeCustomerId: session.customer as string,
+                stripeSubscriptionId: session.subscription as string,
+                plan,
+                status: "active",
+              });
+            }
+            await storage.updateTenant(tenantId, {
+              stripeCustomerId: session.customer as string,
+            });
+            await storage.createSubscriptionEvent({
+              tenantId,
+              stripeEventId: event.id,
+              eventType: event.type,
+              plan,
+              status: "active",
+              payload: { sessionId: session.id },
+            });
+          }
+          break;
+        }
+        
+        case "customer.subscription.updated":
+        case "customer.subscription.deleted": {
+          const sub = event.data.object as Stripe.Subscription;
+          const existingSub = await storage.getSubscriptionByStripeId(sub.id);
+          if (existingSub) {
+            const status = sub.status === "active" ? "active" : sub.status === "past_due" ? "past_due" : "canceled";
+            const priceId = sub.items?.data[0]?.price?.id;
+            let plan: PlanKey | undefined;
+            if (priceId) {
+              if (priceId === process.env.STRIPE_PRICE_STARTER) plan = "starter";
+              else if (priceId === process.env.STRIPE_PRICE_PRO) plan = "pro";
+              else if (priceId === process.env.STRIPE_PRICE_BUSINESS) plan = "agency";
+            }
+            
+            await storage.updateSubscription(existingSub.id, {
+              status: status as any,
+              plan: plan || existingSub.plan,
+              currentPeriodStart: sub.current_period_start ? new Date((sub as any).current_period_start * 1000) : undefined,
+              currentPeriodEnd: sub.current_period_end ? new Date((sub as any).current_period_end * 1000) : undefined,
+            });
+            
+            await storage.createSubscriptionEvent({
+              tenantId: existingSub.tenantId,
+              stripeEventId: event.id,
+              eventType: event.type,
+              plan: plan || existingSub.plan,
+              status,
+              payload: { subscriptionId: sub.id },
+            });
+          }
+          break;
+        }
+        
+        case "invoice.payment_failed": {
+          const invoice = event.data.object as Stripe.Invoice;
+          const customerId = invoice.customer as string;
+          const sub = await storage.getSubscriptionByStripeCustomerId(customerId);
+          if (sub) {
+            await storage.updateSubscription(sub.id, { status: "past_due" });
+            await storage.createSubscriptionEvent({
+              tenantId: sub.tenantId,
+              stripeEventId: event.id,
+              eventType: event.type,
+              status: "past_due",
+              payload: { invoiceId: invoice.id },
+            });
+          }
+          break;
+        }
+      }
+      
+      res.json({ received: true });
+    } catch (error) {
+      console.error("Webhook handler error:", error);
+      res.status(500).json({ message: "Webhook handler error" });
+    }
+  });
   
   // Auth routes
   app.post("/api/auth/signup", async (req, res) => {
@@ -30,20 +152,17 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Email already registered" });
       }
 
-      // Create tenant
       const tenant = await storage.createTenant({
         name: data.companyName,
         status: "active",
       });
 
-      // Create subscription (free starter plan)
       await storage.createSubscription({
         tenantId: tenant.id,
         plan: "starter",
         status: "active",
       });
 
-      // Create user
       const passwordHash = await hashPassword(data.password);
       const user = await storage.createUser({
         email: data.email,
@@ -148,6 +267,121 @@ export async function registerRoutes(
     }
   });
 
+  // Password reset - Forgot password
+  app.post("/api/auth/forgot-password", async (req, res) => {
+    try {
+      const { email } = req.body;
+      if (!email) {
+        return res.status(400).json({ message: "Email is required" });
+      }
+      
+      const successMessage = "If that email exists, we sent a password reset link.";
+      
+      const user = await storage.getUserByEmail(email);
+      if (!user) {
+        return res.json({ message: successMessage });
+      }
+      
+      const recentRequests = await storage.getRecentPasswordResetRequests(user.id, 15);
+      if (recentRequests >= 3) {
+        return res.json({ message: successMessage });
+      }
+      
+      const rawToken = crypto.randomBytes(32).toString("hex");
+      const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+      
+      await storage.createPasswordResetToken({
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      
+      const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
+      const resetUrl = `${appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(email)}`;
+      
+      try {
+        await sendPasswordResetEmail(email, resetUrl);
+      } catch (err) {
+        console.error("Failed to send password reset email:", err);
+      }
+      
+      res.json({ message: successMessage });
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      res.status(500).json({ message: "Failed to process request" });
+    }
+  });
+
+  // Password reset - Reset password
+  app.post("/api/auth/reset-password", async (req, res) => {
+    try {
+      const { token, email, newPassword } = req.body;
+      if (!token || !email || !newPassword) {
+        return res.status(400).json({ message: "Token, email, and new password are required" });
+      }
+      
+      if (newPassword.length < 6) {
+        return res.status(400).json({ message: "Password must be at least 6 characters" });
+      }
+      
+      const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+      const resetToken = await storage.getPasswordResetToken(tokenHash);
+      
+      if (!resetToken) {
+        return res.status(400).json({ message: "Invalid or expired reset link" });
+      }
+      
+      if (resetToken.usedAt) {
+        return res.status(400).json({ message: "This reset link has already been used" });
+      }
+      
+      if (new Date() > new Date(resetToken.expiresAt)) {
+        return res.status(400).json({ message: "This reset link has expired" });
+      }
+      
+      const user = await storage.getUser(resetToken.userId);
+      if (!user || user.email !== email) {
+        return res.status(400).json({ message: "Invalid reset link" });
+      }
+      
+      const passwordHash = await hashPassword(newPassword);
+      await storage.updateUser(user.id, { passwordHash });
+      await storage.markPasswordResetTokenUsed(resetToken.id);
+      
+      res.json({ message: "Password has been reset successfully" });
+    } catch (error) {
+      console.error("Reset password error:", error);
+      res.status(500).json({ message: "Failed to reset password" });
+    }
+  });
+
+  // Change password (authenticated)
+  app.post("/api/auth/change-password", authMiddleware, async (req: AuthRequest, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ message: "Current password and new password are required" });
+      }
+      
+      if (newPassword.length < 6) {
+        return res.status(400).json({ message: "New password must be at least 6 characters" });
+      }
+      
+      const valid = await verifyPassword(currentPassword, req.user!.passwordHash);
+      if (!valid) {
+        return res.status(400).json({ message: "Current password is incorrect" });
+      }
+      
+      const passwordHash = await hashPassword(newPassword);
+      await storage.updateUser(req.user!.id, { passwordHash });
+      
+      res.json({ message: "Password changed successfully" });
+    } catch (error) {
+      console.error("Change password error:", error);
+      res.status(500).json({ message: "Failed to change password" });
+    }
+  });
+
   // User profile
   app.patch("/api/users/profile", authMiddleware, async (req: AuthRequest, res) => {
     try {
@@ -163,15 +397,23 @@ export async function registerRoutes(
   // Tenant settings
   app.patch("/api/tenants/settings", authMiddleware, tenantMiddleware, async (req: AuthRequest, res) => {
     try {
-      const { name, sendingFromName, replyToEmail, companyAddress } = req.body;
+      const { name, sendingFromName, defaultFromEmail, replyToEmail, companyAddress } = req.body;
       const updated = await storage.updateTenant(req.tenantId!, { 
-        name, sendingFromName, replyToEmail, companyAddress 
+        name, sendingFromName, defaultFromEmail, replyToEmail, companyAddress 
       });
       res.json(updated);
     } catch (error) {
       console.error("Update tenant error:", error);
       res.status(500).json({ message: "Failed to update settings" });
     }
+  });
+
+  // SES configuration status
+  app.get("/api/settings/email-status", authMiddleware, tenantMiddleware, async (req: AuthRequest, res) => {
+    res.json({
+      sesConfigured: isSESConfigured(),
+      fromEmail: getSESFromEmail(),
+    });
   });
 
   // Dashboard stats
@@ -436,7 +678,6 @@ export async function registerRoutes(
         contacts = await storage.getContactsByTags(req.tenantId!, tags || []);
       }
 
-      // Filter out suppressed contacts
       const suppressions = await storage.getSuppressions(req.tenantId!);
       const suppressedEmails = new Set(suppressions.map(s => s.email.toLowerCase()));
       contacts = contacts.filter(c => !suppressedEmails.has(c.email.toLowerCase()));
@@ -445,34 +686,32 @@ export async function registerRoutes(
         return res.status(400).json({ message: "No eligible recipients" });
       }
 
-      // Check email limit
-      const tenant = await storage.getTenant(req.tenantId!);
       const subscription = await storage.getSubscription(req.tenantId!);
-      const plan = subscription?.plan || "starter";
-      const planInfo = PLAN_LIMITS[plan as keyof typeof PLAN_LIMITS];
-      const remaining = planInfo.emailsPerMonth - (tenant?.emailsSentThisMonth || 0);
 
-      if (contacts.length > remaining) {
-        return res.status(400).json({ message: `Exceeds email limit. ${remaining} emails remaining.` });
+      await checkAndResetMonthlyUsage(req.tenantId!);
+      const freshTenant = await storage.getTenant(req.tenantId!);
+      const plan = (subscription?.plan || "starter") as PlanKey;
+      const canSend = assertCanSend(freshTenant?.emailsSentThisMonth || 0, contacts.length, plan);
+      if (!canSend.allowed) {
+        return res.status(400).json({ message: canSend.message });
       }
 
-      // Create campaign sends
       const sends = contacts.map(contact => ({
+        tenantId: req.tenantId!,
         campaignId: campaign.id,
         contactId: contact.id,
         status: "queued" as const,
+        attempts: 0,
       }));
 
       await storage.createCampaignSends(sends);
 
-      // Update campaign status
       await storage.updateCampaign(campaign.id, {
         status: "sending",
         sentAt: new Date(),
         totalRecipients: contacts.length,
       });
 
-      // Log event
       await storage.createEventLog({
         tenantId: req.tenantId!,
         type: "campaign_send_started",
@@ -521,23 +760,64 @@ export async function registerRoutes(
   // Billing
   app.post("/api/billing/create-checkout", authMiddleware, tenantMiddleware, async (req: AuthRequest, res) => {
     try {
-      // For MVP, return a placeholder URL since Stripe isn't fully configured
-      res.json({ 
-        url: null,
-        message: "Stripe integration requires configuration. Please set up Stripe keys."
+      const stripe = getStripe();
+      if (!stripe) {
+        return res.status(400).json({ message: "Stripe is not configured. Please add STRIPE_SECRET_KEY." });
+      }
+      
+      const { plan } = req.body;
+      const priceMap: Record<string, string | undefined> = {
+        starter: process.env.STRIPE_PRICE_STARTER,
+        pro: process.env.STRIPE_PRICE_PRO,
+        agency: process.env.STRIPE_PRICE_BUSINESS,
+      };
+      
+      const priceId = priceMap[plan];
+      if (!priceId) {
+        return res.status(400).json({ message: "Invalid plan or price not configured" });
+      }
+      
+      const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
+      
+      const session = await stripe.checkout.sessions.create({
+        mode: "subscription",
+        payment_method_types: ["card"],
+        line_items: [{ price: priceId, quantity: 1 }],
+        success_url: `${appUrl}/dashboard/billing?success=true`,
+        cancel_url: `${appUrl}/dashboard/billing?canceled=true`,
+        metadata: {
+          tenantId: req.tenantId!,
+          plan,
+        },
       });
+      
+      res.json({ url: session.url });
     } catch (error) {
       console.error("Create checkout error:", error);
-      res.status(500).json({ message: "Failed to create checkout" });
+      res.status(500).json({ message: "Failed to create checkout session" });
     }
   });
 
   app.post("/api/billing/portal", authMiddleware, tenantMiddleware, async (req: AuthRequest, res) => {
     try {
-      res.json({ 
-        url: null,
-        message: "Stripe integration requires configuration. Please set up Stripe keys."
+      const stripe = getStripe();
+      if (!stripe) {
+        return res.status(400).json({ message: "Stripe is not configured. Please add STRIPE_SECRET_KEY." });
+      }
+      
+      const tenant = await storage.getTenant(req.tenantId!);
+      if (!tenant?.stripeCustomerId) {
+        return res.status(400).json({ message: "No billing account found. Please subscribe to a plan first." });
+      }
+      
+      const appUrl = process.env.APP_URL || `https://${req.headers.host}`;
+      
+      const portalSession = await stripe.billingPortal.sessions.create({
+        customer: tenant.stripeCustomerId,
+        return_url: `${appUrl}/dashboard/billing`,
       });
+      
+      res.json({ url: portalSession.url });
     } catch (error) {
       console.error("Billing portal error:", error);
       res.status(500).json({ message: "Failed to open billing portal" });
@@ -556,7 +836,7 @@ export async function registerRoutes(
           
           return {
             ...tenant,
-            userCount: 1, // Simplified for MVP
+            userCount: 1,
             contactCount: stats.totalContacts,
             plan: subscription?.plan || "starter",
           };
@@ -607,48 +887,82 @@ export async function registerRoutes(
     }
   });
 
-  // Unsubscribe endpoint (public)
-  app.get("/api/unsubscribe", async (req, res) => {
+  // Unsubscribe endpoint (public, HMAC-secured)
+  app.get("/unsubscribe", async (req, res) => {
     try {
-      const { tenant, email, token } = req.query;
+      const { t, tenant: tenantId, contact: contactId, c: campaignId } = req.query;
       
-      if (!tenant || !email) {
-        return res.status(400).send("Invalid unsubscribe link");
+      if (!t || !tenantId || !contactId || !campaignId) {
+        return res.status(400).send(renderUnsubscribePage("Invalid Link", "This unsubscribe link is invalid or incomplete.", null));
       }
-
-      const contact = await storage.getContactByEmail(tenant as string, email as string);
-      if (contact) {
-        await storage.updateContact(contact.id, { unsubscribed: true });
-        await storage.createSuppression({
-          tenantId: tenant as string,
-          email: email as string,
-          reason: "unsubscribe",
-        });
+      
+      const isValid = verifyUnsubscribeToken(t as string, contactId as string, tenantId as string, campaignId as string);
+      if (!isValid) {
+        return res.status(400).send(renderUnsubscribePage("Invalid Link", "This unsubscribe link is invalid or has been tampered with.", null));
       }
-
-      res.send(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Unsubscribed</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>
-              body { font-family: system-ui, sans-serif; max-width: 400px; margin: 100px auto; text-align: center; padding: 20px; }
-              h1 { color: #333; }
-              p { color: #666; }
-            </style>
-          </head>
-          <body>
-            <h1>Unsubscribed</h1>
-            <p>You have been successfully unsubscribed from this mailing list.</p>
-          </body>
-        </html>
-      `);
+      
+      const contact = await storage.getContactForTenant(contactId as string, tenantId as string);
+      const tenant = await storage.getTenant(tenantId as string);
+      
+      if (!contact) {
+        return res.status(404).send(renderUnsubscribePage("Not Found", "Contact not found.", null));
+      }
+      
+      if (!contact.unsubscribed) {
+        await storage.updateContact(contact.id, { unsubscribed: true, unsubscribedAt: new Date() });
+        
+        const existing = await storage.getSuppression(tenantId as string, contact.email);
+        if (!existing) {
+          await storage.createSuppression({
+            tenantId: tenantId as string,
+            email: contact.email,
+            reason: "unsubscribe",
+          });
+        }
+      }
+      
+      res.send(renderUnsubscribePage(
+        "Unsubscribed",
+        "You have been successfully unsubscribed from this mailing list.",
+        tenant
+      ));
     } catch (error) {
       console.error("Unsubscribe error:", error);
-      res.status(500).send("Failed to process unsubscribe request");
+      res.status(500).send(renderUnsubscribePage("Error", "Failed to process unsubscribe request.", null));
     }
   });
 
   return httpServer;
+}
+
+function renderUnsubscribePage(title: string, message: string, tenant: any): string {
+  const tenantInfo = tenant ? `
+    <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb;">
+      <p style="font-size: 13px; color: #9ca3af; margin: 0;">${escapeHtml(tenant.name)}</p>
+      ${tenant.companyAddress ? `<p style="font-size: 12px; color: #9ca3af; margin: 4px 0 0 0;">${escapeHtml(tenant.companyAddress).replace(/\n/g, '<br>')}</p>` : ""}
+      ${tenant.replyToEmail ? `<p style="font-size: 12px; color: #9ca3af; margin: 4px 0 0 0;">Contact: ${escapeHtml(tenant.replyToEmail)}</p>` : ""}
+    </div>` : "";
+  
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f4f7; margin: 0; padding: 40px 16px;">
+  <div style="max-width: 440px; margin: 0 auto; background: #ffffff; border-radius: 12px; padding: 48px 32px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+    <div style="width: 56px; height: 56px; background: ${title === "Unsubscribed" ? "#dcfce7" : "#fee2e2"}; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 20px;">
+      <span style="font-size: 24px;">${title === "Unsubscribed" ? "&#10003;" : "&#10007;"}</span>
+    </div>
+    <h1 style="color: #111827; font-size: 24px; margin: 0 0 12px 0;">${escapeHtml(title)}</h1>
+    <p style="color: #6b7280; font-size: 16px; line-height: 1.5; margin: 0;">${escapeHtml(message)}</p>
+    ${tenantInfo}
+  </div>
+</body>
+</html>`;
+}
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }

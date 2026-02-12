@@ -1,9 +1,12 @@
 import { 
   users, tenants, contacts, campaigns, campaignSends, subscriptions, suppressions, eventLogs,
+  passwordResetTokens, subscriptionEvents,
   type User, type InsertUser, type Tenant, type InsertTenant, 
   type Contact, type InsertContact, type Campaign, type InsertCampaign,
   type CampaignSend, type InsertCampaignSend, type Subscription, type InsertSubscription,
-  type Suppression, type InsertSuppression, type EventLog, type InsertEventLog
+  type Suppression, type InsertSuppression, type EventLog, type InsertEventLog,
+  type PasswordResetToken, type InsertPasswordResetToken,
+  type SubscriptionEvent, type InsertSubscriptionEvent
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, inArray, gte, lte, count } from "drizzle-orm";
@@ -62,6 +65,21 @@ export interface IStorage {
   // Event Logs
   createEventLog(log: InsertEventLog): Promise<EventLog>;
   getRecentEvents(limit: number): Promise<EventLog[]>;
+
+  // Password Reset Tokens
+  createPasswordResetToken(token: InsertPasswordResetToken): Promise<PasswordResetToken>;
+  getPasswordResetToken(tokenHash: string): Promise<PasswordResetToken | undefined>;
+  markPasswordResetTokenUsed(id: string): Promise<void>;
+  getRecentPasswordResetRequests(userId: string, minutes: number): Promise<number>;
+
+  // Subscription Events
+  createSubscriptionEvent(event: InsertSubscriptionEvent): Promise<SubscriptionEvent>;
+
+  // Atomic job claiming for email worker
+  claimQueuedSends(limit: number): Promise<CampaignSend[]>;
+
+  // Get subscription by stripe customer ID
+  getSubscriptionByStripeCustomerId(stripeCustomerId: string): Promise<Subscription | undefined>;
 
   // Analytics
   getTenantStats(tenantId: string): Promise<{
@@ -379,6 +397,55 @@ export class DatabaseStorage implements IStorage {
       suppressedEmails: allSuppressions.length,
       queuedEmails: queuedSends.length,
     };
+  }
+
+  async createPasswordResetToken(token: InsertPasswordResetToken): Promise<PasswordResetToken> {
+    const [newToken] = await db.insert(passwordResetTokens).values(token).returning();
+    return newToken;
+  }
+
+  async getPasswordResetToken(tokenHash: string): Promise<PasswordResetToken | undefined> {
+    const [token] = await db.select().from(passwordResetTokens)
+      .where(eq(passwordResetTokens.tokenHash, tokenHash));
+    return token;
+  }
+
+  async markPasswordResetTokenUsed(id: string): Promise<void> {
+    await db.update(passwordResetTokens).set({ usedAt: new Date() }).where(eq(passwordResetTokens.id, id));
+  }
+
+  async getRecentPasswordResetRequests(userId: string, minutes: number): Promise<number> {
+    const since = new Date(Date.now() - minutes * 60 * 1000);
+    const result = await db.select({ count: count() }).from(passwordResetTokens)
+      .where(and(eq(passwordResetTokens.userId, userId), gte(passwordResetTokens.createdAt, since)));
+    return result[0]?.count || 0;
+  }
+
+  async createSubscriptionEvent(event: InsertSubscriptionEvent): Promise<SubscriptionEvent> {
+    const [newEvent] = await db.insert(subscriptionEvents).values(event).returning();
+    return newEvent;
+  }
+
+  async claimQueuedSends(limit: number): Promise<CampaignSend[]> {
+    const result = await db.execute(sql`
+      UPDATE campaign_sends 
+      SET status = 'sending' 
+      WHERE id IN (
+        SELECT id FROM campaign_sends 
+        WHERE status = 'queued' 
+        ORDER BY created_at ASC 
+        LIMIT ${limit}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING *
+    `);
+    return (result.rows || []) as unknown as CampaignSend[];
+  }
+
+  async getSubscriptionByStripeCustomerId(stripeCustomerId: string): Promise<Subscription | undefined> {
+    const [subscription] = await db.select().from(subscriptions)
+      .where(eq(subscriptions.stripeCustomerId, stripeCustomerId));
+    return subscription;
   }
 }
 

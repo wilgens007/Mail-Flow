@@ -1,5 +1,5 @@
 import { sql, relations } from "drizzle-orm";
-import { pgTable, text, varchar, boolean, timestamp, integer, jsonb, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, boolean, timestamp, integer, jsonb, pgEnum, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -7,7 +7,7 @@ import { z } from "zod";
 export const userRoleEnum = pgEnum("user_role", ["admin", "user"]);
 export const tenantStatusEnum = pgEnum("tenant_status", ["active", "disabled"]);
 export const campaignStatusEnum = pgEnum("campaign_status", ["draft", "scheduled", "sending", "sent"]);
-export const sendStatusEnum = pgEnum("send_status", ["queued", "sent", "delivered", "bounced", "complained", "unsubscribed"]);
+export const sendStatusEnum = pgEnum("send_status", ["queued", "sending", "sent", "delivered", "bounced", "complained", "failed", "unsubscribed"]);
 export const suppressionReasonEnum = pgEnum("suppression_reason", ["bounce", "complaint", "unsubscribe"]);
 export const subscriptionPlanEnum = pgEnum("subscription_plan", ["starter", "pro", "agency"]);
 export const subscriptionStatusEnum = pgEnum("subscription_status", ["active", "past_due", "canceled", "trialing"]);
@@ -17,10 +17,13 @@ export const tenants = pgTable("tenants", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   sendingFromName: text("sending_from_name").default(""),
+  defaultFromEmail: text("default_from_email").default(""),
   replyToEmail: text("reply_to_email").default(""),
   companyAddress: text("company_address").default(""),
+  stripeCustomerId: text("stripe_customer_id"),
   status: tenantStatusEnum("status").default("active").notNull(),
   emailsSentThisMonth: integer("emails_sent_this_month").default(0).notNull(),
+  monthlyResetDate: timestamp("monthly_reset_date").defaultNow(),
   billingCycleStart: timestamp("billing_cycle_start").defaultNow(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -46,6 +49,7 @@ export const contacts = pgTable("contacts", {
   lastName: text("last_name").default(""),
   tags: text("tags").array().default(sql`'{}'::text[]`),
   unsubscribed: boolean("unsubscribed").default(false).notNull(),
+  unsubscribedAt: timestamp("unsubscribed_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -68,16 +72,21 @@ export const campaigns = pgTable("campaigns", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// Campaign Sends table
+// Campaign Sends table - with unique constraint for idempotency
 export const campaignSends = pgTable("campaign_sends", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id).notNull(),
   campaignId: varchar("campaign_id").references(() => campaigns.id).notNull(),
   contactId: varchar("contact_id").references(() => contacts.id).notNull(),
   status: sendStatusEnum("status").default("queued").notNull(),
   messageId: text("message_id"),
+  attempts: integer("attempts").default(0).notNull(),
+  lastError: text("last_error"),
   sentAt: timestamp("sent_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => [
+  uniqueIndex("campaign_sends_tenant_campaign_contact_idx").on(table.tenantId, table.campaignId, table.contactId),
+]);
 
 // Subscriptions table
 export const subscriptions = pgTable("subscriptions", {
@@ -110,6 +119,28 @@ export const eventLogs = pgTable("event_logs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Password Reset Tokens table
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Subscription Events audit table
+export const subscriptionEvents = pgTable("subscription_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").references(() => tenants.id).notNull(),
+  stripeEventId: text("stripe_event_id"),
+  eventType: text("event_type").notNull(),
+  plan: text("plan"),
+  status: text("status"),
+  payload: jsonb("payload"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Relations
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   users: many(users),
@@ -118,6 +149,7 @@ export const tenantsRelations = relations(tenants, ({ many }) => ({
   subscriptions: many(subscriptions),
   suppressions: many(suppressions),
   eventLogs: many(eventLogs),
+  subscriptionEvents: many(subscriptionEvents),
 }));
 
 export const usersRelations = relations(users, ({ one }) => ({
@@ -152,6 +184,10 @@ export const campaignSendsRelations = relations(campaignSends, ({ one }) => ({
     fields: [campaignSends.contactId],
     references: [contacts.id],
   }),
+  tenant: one(tenants, {
+    fields: [campaignSends.tenantId],
+    references: [tenants.id],
+  }),
 }));
 
 export const subscriptionsRelations = relations(subscriptions, ({ one }) => ({
@@ -175,12 +211,27 @@ export const eventLogsRelations = relations(eventLogs, ({ one }) => ({
   }),
 }));
 
+export const passwordResetTokensRelations = relations(passwordResetTokens, ({ one }) => ({
+  user: one(users, {
+    fields: [passwordResetTokens.userId],
+    references: [users.id],
+  }),
+}));
+
+export const subscriptionEventsRelations = relations(subscriptionEvents, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [subscriptionEvents.tenantId],
+    references: [tenants.id],
+  }),
+}));
+
 // Insert schemas
 export const insertTenantSchema = createInsertSchema(tenants).omit({
   id: true,
   createdAt: true,
   emailsSentThisMonth: true,
   billingCycleStart: true,
+  monthlyResetDate: true,
 });
 
 export const insertUserSchema = createInsertSchema(users).omit({
@@ -223,6 +274,16 @@ export const insertEventLogSchema = createInsertSchema(eventLogs).omit({
   createdAt: true,
 });
 
+export const insertPasswordResetTokenSchema = createInsertSchema(passwordResetTokens).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertSubscriptionEventSchema = createInsertSchema(subscriptionEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Auth schemas
 export const loginSchema = z.object({
   email: z.string().email("Invalid email address"),
@@ -254,10 +315,33 @@ export type Suppression = typeof suppressions.$inferSelect;
 export type InsertSuppression = z.infer<typeof insertSuppressionSchema>;
 export type EventLog = typeof eventLogs.$inferSelect;
 export type InsertEventLog = z.infer<typeof insertEventLogSchema>;
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
+export type InsertPasswordResetToken = z.infer<typeof insertPasswordResetTokenSchema>;
+export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
+export type InsertSubscriptionEvent = z.infer<typeof insertSubscriptionEventSchema>;
 
-// Plan limits
+// Plan limits - centralized
 export const PLAN_LIMITS = {
   starter: { emailsPerMonth: 1000, name: "Starter", price: 19 },
   pro: { emailsPerMonth: 10000, name: "Pro", price: 49 },
   agency: { emailsPerMonth: 50000, name: "Agency", price: 149 },
 } as const;
+
+export type PlanKey = keyof typeof PLAN_LIMITS;
+
+export function getTenantLimits(plan: PlanKey) {
+  return PLAN_LIMITS[plan];
+}
+
+export function assertCanSend(emailsSentThisMonth: number, intendedRecipientCount: number, plan: PlanKey): { allowed: boolean; remaining: number; message?: string } {
+  const limits = getTenantLimits(plan);
+  const remaining = limits.emailsPerMonth - emailsSentThisMonth;
+  if (intendedRecipientCount > remaining) {
+    return {
+      allowed: false,
+      remaining,
+      message: `Exceeds email limit. ${remaining} emails remaining on your ${limits.name} plan.`,
+    };
+  }
+  return { allowed: true, remaining };
+}
