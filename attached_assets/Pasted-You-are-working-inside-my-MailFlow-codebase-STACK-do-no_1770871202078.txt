@@ -1,0 +1,100 @@
+You are working inside my MailFlow codebase.
+
+STACK (do not change):
+- Backend: Express.js + TypeScript
+- DB: PostgreSQL + Drizzle ORM (not Prisma)
+- Auth: custom email+password using bcrypt + JWT
+- Worker: in-process interval worker that runs every 5 seconds to process queued email sends
+- Frontend: React + TypeScript (Vite) + TailwindCSS + Shadcn/UI
+
+GOAL:
+Turn this MVP into a real SaaS by implementing:
+1) Real Stripe subscriptions (Checkout + Customer Portal + Webhooks)
+2) Real email sending with AWS SES (replace simulated sending)
+3) Password reset flow (Forgot Password + Reset Password)
+4) Settings page upgrades (profile + sender defaults + security)
+5) Public unsubscribe page with secure tokens (and make sure sends respect unsubscribed contacts)
+
+HARD REQUIREMENTS:
+- Use Drizzle migrations and schema files consistent with current project structure.
+- Do NOT introduce Prisma, Next.js, or external queue services.
+- Keep the 5-second in-process worker but make sending safe (no double-send) using Postgres row locking or atomic job claiming.
+- Add thorough validation and error handling.
+- Update UI using shadcn components to match existing dashboard style.
+- Add environment variables but do not hardcode secrets.
+
+IMPLEMENTATION DETAILS:
+
+A) STRIPE BILLING
+- Billing page currently placeholder: implement real.
+- Create API routes:
+  POST /api/billing/checkout { plan: 'starter'|'pro'|'business' } -> returns Stripe Checkout URL
+  POST /api/billing/portal -> returns Stripe Customer Portal URL
+- Use Stripe Products/Prices via env:
+  STRIPE_SECRET_KEY
+  STRIPE_WEBHOOK_SECRET
+  STRIPE_PRICE_STARTER
+  STRIPE_PRICE_PRO
+  STRIPE_PRICE_BUSINESS
+  APP_URL
+- Implement webhook endpoint:
+  POST /api/stripe/webhook (raw body)
+  Handle events:
+   - checkout.session.completed
+   - customer.subscription.created/updated/deleted
+   - invoice.payment_failed
+- Persist on tenant/org:
+  stripeCustomerId, stripeSubscriptionId, plan, subscriptionStatus, currentPeriodEnd
+- Gate sending by plan limit:
+  Starter: 1000 emails/month
+  Pro: 10000/month
+  Business: 50000/month
+  Store monthly usage counters per tenant and reset monthly.
+
+B) AWS SES REAL SENDING
+- Replace simulated sending with AWS SES sending using AWS SDK.
+- Add env:
+  AWS_REGION
+  AWS_ACCESS_KEY_ID
+  AWS_SECRET_ACCESS_KEY
+  SES_FROM_EMAIL (must be verified)
+- Update email queue model:
+  email_jobs table with status queued/sending/sent/failed, attempts, lastError, sentAt
+- Worker:
+  Every 5 seconds claim up to N jobs using FOR UPDATE SKIP LOCKED or atomic UPDATE ... RETURNING to avoid double sends
+  Send emails via SES
+  Retry up to 3 times then mark failed
+- Ensure unsubscribed contacts are never queued/sent.
+
+C) PASSWORD RESET FLOW
+- Add routes:
+  POST /api/auth/forgot-password { email }
+  POST /api/auth/reset-password { email, token, newPassword }
+- Create password_reset_tokens table:
+  userId, tokenHash, expiresAt, usedAt, createdAt
+- Token should be random, stored hashed, single-use, expires in 60 minutes.
+- Email reset link to user using SES sending service (or a separate send function).
+
+D) SETTINGS PAGE
+- Implement Settings with these sections:
+  Profile: update name
+  Sender Defaults (tenant-level): defaultFromName, defaultFromEmail
+  Security: change password (currentPassword + newPassword)
+- Make campaign creation use sender defaults if not specified.
+
+E) UNSUBSCRIBE PAGE
+- Create public route:
+  GET /unsubscribe?t=...&tenant=...&c=...
+- Token should be secure (HMAC using UNSUBSCRIBE_SECRET) and validated server-side.
+- Update contact: unsubscribedAt timestamp
+- Build a clean public confirmation page (simple HTML or minimal React route) that works without login.
+- Ensure every campaign email includes:
+  - an unsubscribe link in footer
+  - List-Unsubscribe header if possible
+
+OUTPUT REQUIRED:
+1) List the files you changed/added.
+2) Provide exact env vars to add to .env (names only).
+3) Provide a quick manual test checklist for each feature (Stripe, SES, reset password, settings, unsubscribe).
+4) Ensure build passes and types are correct.
+Proceed now and implement in the codebase.

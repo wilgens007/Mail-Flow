@@ -1,0 +1,72 @@
+1) Raw-body webhook route must be isolated
+
+In Express, the Stripe webhook route must use raw body and be mounted before express.json() (or only for that route). Otherwise signature verification breaks.
+
+2) Store Stripe state on tenant, but also store a history row
+
+Tenant fields are fine, but consider a small subscription_events table (or an audit log) so you can debug “why did this tenant lose access?”
+
+3) Plan limits should be enforced in one place
+
+Do not sprinkle “if plan === …” across multiple services. Create a single function like:
+
+getTenantLimits(plan)
+
+assertCanSend(tenantId, intendedRecipientCount)
+
+That prevents billing-related bugs later.
+
+B) SES sending — the two biggest things people miss
+
+Your atomic claiming and retries are exactly what you want.
+
+1) Never send to unsubscribed contacts at two layers
+
+Do both:
+
+Filter out unsubscribed when queueing
+
+Re-check unsubscribed inside the worker (in case they unsubscribed after queueing)
+
+This prevents compliance issues.
+
+2) Add idempotency at the job level
+
+Atomic claim prevents double-processing, but add one more guard:
+
+each job should have a stable jobKey (tenantId + campaignId + contactId) with a unique constraint
+That prevents accidental duplicate enqueues.
+
+Also: if you can, add List-Unsubscribe header even before open/click tracking. It helps deliverability and user trust.
+
+C) Password reset — keep it boring and safe
+
+Your design is solid. Two small guardrails:
+
+Don’t reveal whether an email exists: always return “If that email exists, we sent a link.”
+
+Rate limit “forgot password” by IP/email combo (even a simple DB throttle is fine for MVP).
+
+D) Settings page — include “sender identity status”
+
+Even if you don’t fully automate verification, show:
+
+Default From Name
+
+Default From Email
+
+“Verified sender: Yes/No” (based on your SES identity config or a config flag)
+
+This reduces support tickets later. People will ask why emails go to spam.
+
+E) Unsubscribe — correct, plus one more compliance win
+
+HMAC token flow is great.
+
+Add one additional requirement:
+
+Your footer should include tenant business name + a contact method (email/website), even if minimal.
+
+Also: make unsubscribe route public and stable:
+
+/unsubscribe should work without React app bootstrapping (simple server-rendered HTML is perfectly fine).
