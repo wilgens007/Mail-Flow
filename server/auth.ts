@@ -4,7 +4,10 @@ import { Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
 import type { User } from "@shared/schema";
 
-const JWT_SECRET = process.env.SESSION_SECRET || "your-jwt-secret-key-change-in-production";
+const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET;
+if (!JWT_SECRET) {
+  throw new Error("FATAL: JWT_SECRET (or SESSION_SECRET) environment variable is not set. Refusing to start with an insecure default.");
+}
 const JWT_EXPIRES_IN = "7d";
 
 export interface AuthRequest extends Request {

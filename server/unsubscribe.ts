@@ -1,6 +1,9 @@
 import crypto from "crypto";
 
-const UNSUBSCRIBE_SECRET = process.env.UNSUBSCRIBE_SECRET || process.env.SESSION_SECRET || "unsubscribe-fallback-secret";
+const UNSUBSCRIBE_SECRET = process.env.UNSUBSCRIBE_SECRET;
+if (!UNSUBSCRIBE_SECRET) {
+  throw new Error("FATAL: UNSUBSCRIBE_SECRET environment variable is not set. Refusing to start with an insecure default.");
+}
 
 export function generateUnsubscribeToken(contactId: string, tenantId: string, campaignId: string): string {
   const data = `${contactId}:${tenantId}:${campaignId}`;
