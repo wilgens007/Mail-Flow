@@ -1,0 +1,1 @@
+- [GitHub push authentication](github-push-auth.md) — connecting GitHub may not authorize the CLI; verify the configured write URL targets GitHub before retrying.
