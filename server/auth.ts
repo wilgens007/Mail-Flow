@@ -4,7 +4,7 @@ import { Request, Response, NextFunction } from "express";
 import { storage } from "./storage";
 import type { User } from "@shared/schema";
 
-const JWT_SECRET = process.env.JWT_SECRET || process.env.SESSION_SECRET;
+const JWT_SECRET = (process.env.JWT_SECRET || process.env.SESSION_SECRET)!;
 if (!JWT_SECRET) {
   throw new Error("FATAL: JWT_SECRET (or SESSION_SECRET) environment variable is not set. Refusing to start with an insecure default.");
 }
@@ -29,7 +29,11 @@ export function generateToken(userId: string): string {
 
 export function verifyToken(token: string): { userId: string } | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as { userId: string };
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (typeof payload !== "object" || payload === null || typeof payload.userId !== "string") {
+      return null;
+    }
+    return { userId: payload.userId };
   } catch {
     return null;
   }

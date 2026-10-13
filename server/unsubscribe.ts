@@ -1,6 +1,6 @@
 import crypto from "crypto";
 
-const UNSUBSCRIBE_SECRET = process.env.UNSUBSCRIBE_SECRET;
+const UNSUBSCRIBE_SECRET = process.env.UNSUBSCRIBE_SECRET!;
 if (!UNSUBSCRIBE_SECRET) {
   throw new Error("FATAL: UNSUBSCRIBE_SECRET environment variable is not set. Refusing to start with an insecure default.");
 }
