@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "yfAoeWTwWcRbRONSq6jEx"
+uri = "file://generated-artifacts/mailflow-project.zip"
+type = "unspecified"
+title = "MailFlow project ZIP"
+description = "Download the project source and configuration. Dependencies, Git history, and local Replit agent files are excluded."
+logical_id = "597e3149-2696-4223-88bd-48510a9445d1"
+content_hash = "sha256:14600f2fe01c0768a27b9b0433a26949217db13fda42444ac56d44c94ac67c7b"
+size = 248918
+mtime_ms = 1791883010251
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:b5705644-075d-46ae-9222-320d599469d7/597e3149-2696-4223-88bd-48510a9445d1/eb2b7734-8d05-4ec0-bf2e-144b3ad4d460"
+storage_version_token = "1791883013964368"
+content_type = "application/octet-stream"
