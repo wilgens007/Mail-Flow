@@ -34,6 +34,7 @@ interface SendEmailParams {
   replyTo?: string;
   subject: string;
   htmlBody: string;
+  textBody?: string;
   headers?: Record<string, string>;
 }
 
@@ -62,6 +63,14 @@ export async function sendEmail(params: SendEmailParams): Promise<{ messageId: s
           Charset: "UTF-8",
           Data: params.htmlBody,
         },
+        ...(params.textBody
+          ? {
+              Text: {
+                Charset: "UTF-8",
+                Data: params.textBody,
+              },
+            }
+          : {}),
       },
       Subject: {
         Charset: "UTF-8",
@@ -84,6 +93,7 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string, fromE
     to,
     from: fromEmail || getSESFromEmail(),
     subject: "Reset Your Password - MailFlow",
+    textBody: `You requested a password reset for your MailFlow account.\n\nReset your password here: ${resetUrl}\n\nThis link expires in 60 minutes. If you didn't request this, you can safely ignore this email.`,
     htmlBody: `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>

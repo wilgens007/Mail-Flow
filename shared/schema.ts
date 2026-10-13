@@ -83,6 +83,10 @@ export const campaignSends = pgTable("campaign_sends", {
   attempts: integer("attempts").default(0).notNull(),
   lastError: text("last_error"),
   sentAt: timestamp("sent_at"),
+  openedAt: timestamp("opened_at"),
+  openCount: integer("open_count").default(0).notNull(),
+  clickedAt: timestamp("clicked_at"),
+  clickCount: integer("click_count").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => [
   uniqueIndex("campaign_sends_tenant_campaign_contact_idx").on(table.tenantId, table.campaignId, table.contactId),

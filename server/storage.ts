@@ -48,8 +48,10 @@ export interface IStorage {
   // Campaign Sends
   createCampaignSends(sends: InsertCampaignSend[]): Promise<number>;
   getQueuedSends(limit: number): Promise<CampaignSend[]>;
+  getCampaignSend(id: string): Promise<CampaignSend | undefined>;
+  getCampaignSendsByMessageId(messageId: string): Promise<CampaignSend[]>;
   updateCampaignSend(id: string, data: Partial<InsertCampaignSend>): Promise<void>;
-  getCampaignSendStats(campaignId: string): Promise<{ delivered: number; bounced: number; complained: number }>;
+  getCampaignSendStats(campaignId: string): Promise<{ delivered: number; bounced: number; complained: number; opened: number; clicked: number; totalOpens: number; totalClicks: number }>;
 
   // Subscriptions
   getSubscription(tenantId: string): Promise<Subscription | undefined>;
@@ -251,16 +253,29 @@ export class DatabaseStorage implements IStorage {
       .orderBy(campaignSends.createdAt);
   }
 
+  async getCampaignSend(id: string): Promise<CampaignSend | undefined> {
+    const [send] = await db.select().from(campaignSends).where(eq(campaignSends.id, id));
+    return send;
+  }
+
+  async getCampaignSendsByMessageId(messageId: string): Promise<CampaignSend[]> {
+    return db.select().from(campaignSends).where(eq(campaignSends.messageId, messageId));
+  }
+
   async updateCampaignSend(id: string, data: Partial<InsertCampaignSend>): Promise<void> {
     await db.update(campaignSends).set(data).where(eq(campaignSends.id, id));
   }
 
-  async getCampaignSendStats(campaignId: string): Promise<{ delivered: number; bounced: number; complained: number }> {
+  async getCampaignSendStats(campaignId: string): Promise<{ delivered: number; bounced: number; complained: number; opened: number; clicked: number; totalOpens: number; totalClicks: number }> {
     const sends = await db.select().from(campaignSends).where(eq(campaignSends.campaignId, campaignId));
     return {
       delivered: sends.filter(s => s.status === "delivered" || s.status === "sent").length,
       bounced: sends.filter(s => s.status === "bounced").length,
       complained: sends.filter(s => s.status === "complained").length,
+      opened: sends.filter(s => (s.openCount || 0) > 0).length,
+      clicked: sends.filter(s => (s.clickCount || 0) > 0).length,
+      totalOpens: sends.reduce((sum, s) => sum + (s.openCount || 0), 0),
+      totalClicks: sends.reduce((sum, s) => sum + (s.clickCount || 0), 0),
     };
   }
 
