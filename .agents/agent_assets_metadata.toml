@@ -14,3 +14,17 @@ mtime_ms = 1791889502176
 storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:b5705644-075d-46ae-9222-320d599469d7/597e3149-2696-4223-88bd-48510a9445d1/d8b34e7d-9630-4e37-956e-c48c94a22758"
 storage_version_token = "1791889508502703"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "caEjReHaBkRXEg6_p87iK"
+uri = "file://generated-artifacts/mailflow-overview.mp4"
+type = "video"
+title = "MailFlow animated overview"
+description = "A 14-second, 16:9 1080p motion-graphics video showing MailFlow campaign creation, engagement analytics, bounce handling, and unsubscribe tools."
+logical_id = "ac58fb05-1169-4c97-ab00-44f8bd24af81"
+content_hash = "sha256:d7fb77c5c23aea5e24595bea5c1e186457777bfd52dd750fab388c61a1687f46"
+size = 835492
+mtime_ms = 1791891286112
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:b5705644-075d-46ae-9222-320d599469d7/ac58fb05-1169-4c97-ab00-44f8bd24af81/33a7b2dd-39b0-4707-bc49-d7a686851226"
+storage_version_token = "1791891361523998"
+content_type = "video/mp4"
