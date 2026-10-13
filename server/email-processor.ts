@@ -1,6 +1,7 @@
 import { storage } from "./storage";
 import { sendEmail, getSESFromEmail } from "./ses-service";
 import { buildUnsubscribeUrl } from "./unsubscribe";
+import { injectTrackingPixel, rewriteLinksForTracking, htmlToText } from "./tracking";
 import { checkAndResetMonthlyUsage } from "./plan-limits";
 
 let processorInterval: NodeJS.Timeout | null = null;
@@ -81,12 +82,19 @@ async function processEmailQueue() {
       const fromEmail = tenant.defaultFromEmail || getSESFromEmail();
       const fromHeader = fromName ? `${fromName} <${fromEmail}>` : fromEmail;
 
+      // Tracking: rewrite links + inject open pixel (uses the send's DB id)
+      const appUrlForTracking = (process.env.APP_URL || "http://localhost:5000").replace(/\/$/, "");
+      htmlBody = rewriteLinksForTracking(htmlBody, appUrlForTracking, send.id);
+      htmlBody = injectTrackingPixel(htmlBody, appUrlForTracking, send.id);
+      const textBody = htmlToText(htmlBody);
+
       const result = await sendEmail({
         to: contact.email,
         from: fromHeader,
         replyTo: tenant.replyToEmail || undefined,
         subject: campaign.subject || "",
         htmlBody,
+        textBody,
         headers: {
           "List-Unsubscribe": `<${unsubscribeUrl}>`,
           "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
@@ -168,8 +176,47 @@ async function processEmailQueue() {
 
 export async function handleBounce(messageId: string, email: string, bounceType: string) {
   console.log(`Handling bounce for ${email}: ${bounceType}`);
+  const sends = await storage.getCampaignSendsByMessageId(messageId);
+  const tenantId = sends[0]?.tenantId;
+  for (const send of sends) {
+    await storage.updateCampaignSend(send.id, { status: "bounced", lastError: `Bounce: ${bounceType}` });
+  }
+  if (tenantId) {
+    // Hard bounces and persistent transient failures -> suppress the address
+    const normalized = bounceType.toLowerCase();
+    if (normalized.includes("permanent") || normalized.includes("undetermined")) {
+      const existing = await storage.getSuppression(tenantId, email);
+      if (!existing) {
+        await storage.createSuppression({ tenantId, email, reason: "bounce" });
+        console.log(`Suppressed ${email} (bounce) for tenant ${tenantId}`);
+      }
+    }
+    await storage.createEventLog({
+      tenantId,
+      type: "email_bounced",
+      payload: { email, bounceType, messageId },
+    });
+  }
 }
 
 export async function handleComplaint(messageId: string, email: string) {
   console.log(`Handling complaint for ${email}`);
+  const sends = await storage.getCampaignSendsByMessageId(messageId);
+  const tenantId = sends[0]?.tenantId;
+  for (const send of sends) {
+    await storage.updateCampaignSend(send.id, { status: "complained", lastError: "Spam complaint" });
+  }
+  if (tenantId) {
+    // Complaints always suppress — continuing to mail complainers destroys sender reputation
+    const existing = await storage.getSuppression(tenantId, email);
+    if (!existing) {
+      await storage.createSuppression({ tenantId, email, reason: "complaint" });
+      console.log(`Suppressed ${email} (complaint) for tenant ${tenantId}`);
+    }
+    await storage.createEventLog({
+      tenantId,
+      type: "email_complained",
+      payload: { email, messageId },
+    });
+  }
 }

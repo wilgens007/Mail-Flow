@@ -16,6 +16,8 @@ import { sendPasswordResetEmail, getSESFromEmail, isSESConfigured } from "./ses-
 import { verifyUnsubscribeToken, buildUnsubscribeUrl } from "./unsubscribe";
 import { checkAndResetMonthlyUsage, getTenantPlan } from "./plan-limits";
 import { generateHtmlFromJson, type SimpleEmailContent } from "./email-template";
+import { getTrackingPixel } from "./tracking";
+import { registerSesWebhook } from "./ses-webhook";
 import { z } from "zod";
 
 const upload = multer({ storage: multer.memoryStorage() });
@@ -742,12 +744,17 @@ export async function registerRoutes(
           })
       );
 
+      const totalDelivered = topCampaigns.reduce((sum: number, c: any) => sum + (c.delivered || 0), 0);
+      const totalOpened = topCampaigns.reduce((sum: number, c: any) => sum + (c.opened || 0), 0);
+      const totalClicked = topCampaigns.reduce((sum: number, c: any) => sum + (c.clicked || 0), 0);
       res.json({
         emailsSent: stats.sent,
         emailsDelivered: stats.delivered,
         emailsBounced: stats.bounced,
         emailsComplained: stats.complained,
         deliveryRate: stats.sent > 0 ? Math.round((stats.delivered / stats.sent) * 100) : 0,
+        openRate: totalDelivered > 0 ? Math.round((totalOpened / totalDelivered) * 1000) / 10 : 0,
+        clickRate: totalDelivered > 0 ? Math.round((totalClicked / totalDelivered) * 1000) / 10 : 0,
         dailyStats: stats.dailyStats,
         topCampaigns,
       });
@@ -931,6 +938,50 @@ export async function registerRoutes(
       res.status(500).send(renderUnsubscribePage("Error", "Failed to process unsubscribe request.", null));
     }
   });
+
+  // Open tracking pixel (public — sendId is an unguessable UUID)
+  app.get("/t/o/:sendId", async (req, res) => {
+    try {
+      const send = await storage.getCampaignSend(req.params.sendId);
+      if (send) {
+        await storage.updateCampaignSend(send.id, {
+          openedAt: send.openedAt || new Date(),
+          openCount: (send.openCount || 0) + 1,
+        } as any);
+      }
+    } catch (err) {
+      console.error("Open tracking error:", err);
+    }
+    res.set({
+      "Content-Type": "image/gif",
+      "Content-Length": getTrackingPixel().length.toString(),
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+    });
+    res.send(getTrackingPixel());
+  });
+
+  // Click tracking redirect (public — sendId is an unguessable UUID)
+  app.get("/t/c/:sendId", async (req, res) => {
+    const target = req.query.u as string;
+    if (!target || !/^https?:\/\//i.test(target)) {
+      return res.status(400).send("Invalid redirect URL");
+    }
+    try {
+      const send = await storage.getCampaignSend(req.params.sendId);
+      if (send) {
+        await storage.updateCampaignSend(send.id, {
+          clickedAt: send.clickedAt || new Date(),
+          clickCount: (send.clickCount || 0) + 1,
+        } as any);
+      }
+    } catch (err) {
+      console.error("Click tracking error:", err);
+    }
+    res.redirect(302, target);
+  });
+
+  // SES bounce/complaint webhook (SNS)
+  registerSesWebhook(app);
 
   return httpServer;
 }
