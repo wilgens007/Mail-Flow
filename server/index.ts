@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
+import rateLimit from "express-rate-limit";
 import { startEmailProcessor } from "./email-processor";
 
 const app = express();
@@ -61,9 +62,35 @@ app.use((req, res, next) => {
   next();
 });
 
+// Rate limiting: brute-force protection for auth, abuse protection for API
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 attempts per window per IP
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/signup", authLimiter);
+app.use("/api/auth/forgot-password", authLimiter);
+app.use("/api/auth/reset-password", authLimiter);
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 120, // 120 requests per minute per IP
+  message: { message: "Too many requests. Please slow down." },
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+app.use("/api/", apiLimiter);
+
 (async () => {
-  // Seed database on startup
-  await seedDatabase();
+  // Seed demo accounts on startup (development only — never in production)
+  if (process.env.NODE_ENV !== "production") {
+    await seedDatabase();
+  } else {
+    console.log("Skipping demo seed in production.");
+  }
   
   // Start email queue processor
   startEmailProcessor();

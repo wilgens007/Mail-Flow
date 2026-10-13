@@ -58,10 +58,10 @@ export default function LandingPage() {
   ];
 
   const stats = [
-    { value: "99.9%", label: "Delivery Rate" },
-    { value: "50M+", label: "Emails Sent" },
-    { value: "10K+", label: "Happy Users" },
-    { value: "24/7", label: "Support" }
+    { value: "1,000", label: "Free emails / month" },
+    { value: "24/7", label: "Support" },
+    { value: "GDPR", label: "Compliant" },
+    { value: "API", label: "Access included" }
   ];
 
   return (
@@ -307,53 +307,35 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section id="testimonials" className="py-20 sm:py-32">
+        <section id="why" className="py-20 sm:py-32">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="text-center mb-16">
               <h2 className="text-3xl sm:text-4xl font-bold mb-4">
-                Loved by marketers everywhere
+                Built for senders who want control
               </h2>
               <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                See what our customers have to say about MailFlow.
+                No bloated enterprise contracts. Just the email tools you need, priced to scale with you.
               </p>
             </div>
-            
+
             <div className="grid md:grid-cols-3 gap-6">
               {[
                 {
-                  quote: "MailFlow has transformed how we communicate with our customers. The analytics alone have helped us increase conversions by 40%.",
-                  author: "Sarah Chen",
-                  role: "Marketing Director",
-                  company: "TechStart Inc"
+                  title: "Start free, scale naturally",
+                  description: "1,000 emails a month on us. Upgrade only when your list outgrows the free tier."
                 },
                 {
-                  quote: "Finally, an email platform that's both powerful and easy to use. Our team was up and running in minutes.",
-                  author: "Michael Brooks",
-                  role: "CEO",
-                  company: "Growth Labs"
+                  title: "Your data stays yours",
+                  description: "Import and export your contacts anytime. No lock-in, no hostage lists."
                 },
                 {
-                  quote: "The deliverability is outstanding. We've seen our open rates increase by 25% since switching to MailFlow.",
-                  author: "Emily Rodriguez",
-                  role: "Head of Growth",
-                  company: "Spark Digital"
+                  title: "Compliance by default",
+                  description: "Automatic unsubscribe handling, bounce management, and suppression lists built in."
                 }
-              ].map((testimonial, index) => (
+              ].map((item, index) => (
                 <Card key={index} className="p-6">
-                  <p className="text-muted-foreground mb-6">"{testimonial.quote}"</p>
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                      <span className="text-sm font-semibold text-primary">
-                        {testimonial.author.split(" ").map(n => n[0]).join("")}
-                      </span>
-                    </div>
-                    <div>
-                      <div className="font-medium text-sm">{testimonial.author}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {testimonial.role}, {testimonial.company}
-                      </div>
-                    </div>
-                  </div>
+                  <div className="font-medium mb-2">{item.title}</div>
+                  <p className="text-sm text-muted-foreground">{item.description}</p>
                 </Card>
               ))}
             </div>
