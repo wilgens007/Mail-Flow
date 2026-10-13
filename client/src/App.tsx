@@ -8,6 +8,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 import DashboardLayout from "@/components/dashboard-layout";
 
 import LandingPage from "@/pages/landing";
+import PrivacyPage from "@/pages/privacy";
+import TermsPage from "@/pages/terms";
 import LoginPage from "@/pages/login";
 import SignupPage from "@/pages/signup";
 import DashboardPage from "@/pages/dashboard/index";
@@ -89,6 +91,8 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={LandingPage} />
+      <Route path="/privacy" component={PrivacyPage} />
+      <Route path="/terms" component={TermsPage} />
       
       <Route path="/login">
         <PublicRoute>
